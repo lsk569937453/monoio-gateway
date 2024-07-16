@@ -17,7 +17,9 @@ use monoio_http::{
     },
     util::spsc::{spsc_pair, SPSCReceiver},
 };
-use tracing::info;
+mod middleware;
+#[macro_use]
+extern crate tracing;
 use tracing_subscriber::FmtSubscriber;
 fn main() -> Result<(), anyhow::Error> {
     // let port = cli.port;
@@ -52,7 +54,7 @@ async fn main_with_error() {
         .with_max_level(tracing::Level::DEBUG)
         .finish();
     // Initialize the tracing subscriber
-    tracing::subscriber::set_global_default(subscriber);
+    let _ = tracing::subscriber::set_global_default(subscriber);
     let listener = TcpListener::bind("0.0.0.0:8080").unwrap();
     info!("Listening 0.0.0.0:8080");
     loop {
