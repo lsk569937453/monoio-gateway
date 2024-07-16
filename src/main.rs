@@ -17,10 +17,35 @@ use monoio_http::{
     },
     util::spsc::{spsc_pair, SPSCReceiver},
 };
+fn main() -> Result<(), anyhow::Error> {
+    // let port = cli.port;
+    // let addr = format!(r#"0.0.0.0:{port}"#);
+    let cpus = num_cpus::get();
+    println!("Cpu core is {}", cpus);
 
-#[monoio::main(threads = 0)]
+    std::thread::scope(|s| {
+        // let addr_clone = addr.clone();
+        // let database_clone = database_holder.clone();
+        for i in 0..cpus {
+            println!("thread is {}", i);
+            // let addr_clone1 = addr_clone.clone();
+            // let database_clone1 = database_clone.clone();
+            s.spawn(move || {
+                let mut rt = monoio::RuntimeBuilder::<monoio::IoUringDriver>::new()
+                    .with_entries(256)
+                    .enable_timer()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    main_with_error().await;
+                });
+            });
+        }
+    });
+    Ok(())
+}
 //very powerful
-async fn main() {
+async fn main_with_error() {
     let listener = TcpListener::bind("0.0.0.0:8080").unwrap();
     println!("Listening");
     loop {
@@ -34,25 +59,6 @@ async fn main() {
                 // println!("accepted connection failed: {}", e);
             }
         }
-    }
-}
-async fn echo(mut stream: TcpStream) -> std::io::Result<()> {
-    let mut buf: Vec<u8> = Vec::with_capacity(8 * 1024);
-    let mut res;
-    let res_str = "HTTP/1.1 200 OK\r\n";
-    loop {
-        // read
-        (res, buf) = stream.read(buf).await;
-        if res? == 0 {
-            return Ok(());
-        }
-        let res_bytes = res_str.as_bytes();
-        // write all
-        (res, _) = stream.write_all(res_bytes).await;
-        res?;
-
-        // clear
-        buf.clear();
     }
 }
 async fn handle_connection(stream: TcpStream) {
