@@ -1,0 +1,9 @@
+[package]
+name = "monoio-gateway"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monoio-http = "0.3.10"
+monoio = "0.2.3"
+http = "1.1.0"
