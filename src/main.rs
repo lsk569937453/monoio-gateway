@@ -17,6 +17,8 @@ use monoio_http::{
     },
     util::spsc::{spsc_pair, SPSCReceiver},
 };
+use tracing::info;
+use tracing_subscriber::FmtSubscriber;
 fn main() -> Result<(), anyhow::Error> {
     // let port = cli.port;
     // let addr = format!(r#"0.0.0.0:{port}"#);
@@ -46,8 +48,13 @@ fn main() -> Result<(), anyhow::Error> {
 }
 //very powerful
 async fn main_with_error() {
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(tracing::Level::DEBUG)
+        .finish();
+    // Initialize the tracing subscriber
+    tracing::subscriber::set_global_default(subscriber);
     let listener = TcpListener::bind("0.0.0.0:8080").unwrap();
-    println!("Listening");
+    info!("Listening 0.0.0.0:8080");
     loop {
         let incoming = listener.accept().await;
         match incoming {
