@@ -42,10 +42,12 @@ use crate::control_plane::rest_api::start_control_plane;
 use crate::middleware::ip_allow_service::IpAllowService;
 use futures::channel::mpsc::unbounded;
 use monoio::io::Canceller;
+use monoio_http_client::Client;
 use std::pin::pin;
 use std::sync::RwLock;
 use tracing_subscriber::FmtSubscriber;
 use vojo::gateway_request;
+
 use vojo::gateway_request::GatewayRequest; // 0.3.8
 fn main() -> Result<(), anyhow::Error> {
     std::thread::scope(|s| {
@@ -98,20 +100,26 @@ async fn main_with_error(handler: Handler) {
     // Initialize the tracing subscriber
     let _ = tracing::subscriber::set_global_default(subscriber);
     let listener = TcpListener::bind("0.0.0.0:8080").unwrap();
+    let client = Client::default();
 
     info!("Listening 0.0.0.0:8080");
     loop {
         if let Ok((stream, addr)) = listener.accept().await {
-            monoio::spawn(handle_connection(handler.clone(), stream, addr.to_string()));
+            monoio::spawn(handle_connection(
+                client.clone(),
+                handler.clone(),
+                stream,
+                addr.to_string(),
+            ));
         }
     }
 }
-async fn handle_connection(handler: Handler, stream: TcpStream, addr: String) {
+async fn handle_connection(client: Client, handler: Handler, stream: TcpStream, addr: String) {
     let (r, w) = stream.into_split();
     let sender = GenericEncoder::new(w);
     let mut receiver = RequestDecoder::new(r);
     let (mut tx, rx) = spsc_pair();
-    monoio::spawn(handle_task(handler, rx, sender, addr));
+    monoio::spawn(handle_task(client, handler, rx, sender, addr));
 
     loop {
         match receiver.next().await {
@@ -137,6 +145,7 @@ async fn handle_connection(handler: Handler, stream: TcpStream, addr: String) {
 }
 
 async fn handle_task(
+    client: Client,
     handler: Handler,
     mut receiver: SPSCReceiver<Request>,
     mut sender: impl Sink<Response, Error = impl Into<HttpError>>,
@@ -171,7 +180,7 @@ async fn handle_task(
         if data.api_service_config.contains_key("k") {
             println!("c");
         }
-        let gateway_request = GatewayRequest::new(request, remote_addr.clone());
+        let gateway_request = GatewayRequest::new(request, remote_addr.clone(), client.clone());
 
         let resp = tower_service.call(gateway_request).await?;
 
@@ -180,6 +189,14 @@ async fn handle_task(
 }
 
 async fn handle_request(gateway_request: GatewayRequest) -> Result<Response, anyhow::Error> {
+    let resp = gateway_request
+        .client
+        .get("http://backend:8080")
+        .send()
+        .await?;
+    let http_resp = resp.bytes().await.unwrap();
+    // println!("{:?}", http_resp);
+
     let req = gateway_request.request;
     let mut headers = HeaderMap::new();
     headers.insert("Server", "monoio-http-demo".parse().unwrap());
