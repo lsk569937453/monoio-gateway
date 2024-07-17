@@ -39,6 +39,8 @@ extern crate async_trait;
 use crate::control_plane::rest_api::start_control_plane;
 use crate::middleware::ip_allow_service::IpAllowService;
 use futures::channel::mpsc::unbounded;
+use monoio::io::Canceller;
+use std::pin::pin;
 use tracing_subscriber::FmtSubscriber;
 use vojo::gateway_request;
 use vojo::gateway_request::GatewayRequest; // 0.3.8
@@ -95,18 +97,27 @@ async fn main_with_error(mut receiver: UnboundedReceiver<String>) {
     // Initialize the tracing subscriber
     let _ = tracing::subscriber::set_global_default(subscriber);
     let listener = TcpListener::bind("0.0.0.0:8080").unwrap();
+
     info!("Listening 0.0.0.0:8080");
     loop {
-        println!("ccxxxcc");
+        let canceller = Canceller::new();
+        let mut io_fut = pin!(listener.cancelable_accept(canceller.handle()));
         monoio::select! {
-        Ok((stream, addr)) = listener.accept() => {
-                monoio::spawn(handle_connection(stream, addr.to_string()));
-        }
-        app_config_str = receiver.next() => {
-            println!("cccc");
-            info!("receive config:{:?}",app_config_str);
-        }
+            Ok((stream, addr)) = &mut io_fut =>{
 
+                monoio::spawn(handle_connection(stream, addr.to_string()));
+            }
+             app_config_str = receiver.next()=>{
+                 println!("accept timeout but not sure!");
+                canceller.cancel();
+                if let Ok((stream, addr))=io_fut.await{
+                    monoio::spawn(handle_connection(stream, addr.to_string()));
+                }else{
+                    info!("app_config_str：{:?}",app_config_str);
+                    println!("accept timeout but not sure!");
+                }
+
+            }
         }
     }
 }
