@@ -1,3 +1,5 @@
+use crate::middleware::log_service::LogService;
+use anyhow::anyhow;
 use http::{response::Builder, HeaderMap, StatusCode};
 use monoio::io::AsyncReadRent;
 use monoio::io::AsyncWriteRentExt;
@@ -17,13 +19,31 @@ use monoio_http::{
     },
     util::spsc::{spsc_pair, SPSCReceiver},
 };
+use tower::layer::layer_fn;
+use tower::Layer;
+use tower::ServiceBuilder;
+use tower::{service_fn, BoxError, Service, ServiceExt};
+use vojo::app_error::AppError;
+mod constants;
+mod control_plane;
 mod middleware;
+mod vojo;
 #[macro_use]
 extern crate tracing;
+#[macro_use]
+extern crate serde;
+#[macro_use]
+extern crate async_trait;
+use crate::control_plane::rest_api::start_control_plane;
+use crate::middleware::ip_allow_service::IpAllowService;
 use tracing_subscriber::FmtSubscriber;
+use vojo::gateway_request;
+use vojo::gateway_request::GatewayRequest;
 fn main() -> Result<(), anyhow::Error> {
-    // let port = cli.port;
-    // let addr = format!(r#"0.0.0.0:{port}"#);
+    std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        starts_control_plane();
+    });
     let cpus = num_cpus::get();
     println!("Cpu core is {}", cpus);
 
@@ -48,7 +68,17 @@ fn main() -> Result<(), anyhow::Error> {
     });
     Ok(())
 }
-//very powerful
+fn starts_control_plane() -> Result<(), AppError> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .map_err(|e| AppError(e.to_string()))?;
+    rt.block_on(async {
+        start_control_plane(8888).await;
+    });
+    Ok(())
+}
 async fn main_with_error() {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(tracing::Level::DEBUG)
@@ -62,7 +92,7 @@ async fn main_with_error() {
         match incoming {
             Ok((stream, addr)) => {
                 // println!("accepted a connection from {}", addr);
-                monoio::spawn(handle_connection(stream));
+                monoio::spawn(handle_connection(stream, addr.to_string()));
             }
             Err(e) => {
                 // println!("accepted connection failed: {}", e);
@@ -70,12 +100,12 @@ async fn main_with_error() {
         }
     }
 }
-async fn handle_connection(stream: TcpStream) {
+async fn handle_connection(stream: TcpStream, addr: String) {
     let (r, w) = stream.into_split();
     let sender = GenericEncoder::new(w);
     let mut receiver = RequestDecoder::new(r);
     let (mut tx, rx) = spsc_pair();
-    monoio::spawn(handle_task(rx, sender));
+    monoio::spawn(handle_task(rx, sender, addr));
 
     loop {
         match receiver.next().await {
@@ -103,7 +133,22 @@ async fn handle_connection(stream: TcpStream) {
 async fn handle_task(
     mut receiver: SPSCReceiver<Request>,
     mut sender: impl Sink<Response, Error = impl Into<HttpError>>,
-) -> Result<(), HttpError> {
+    remote_addr: String,
+) -> Result<(), anyhow::Error> {
+    let service_fn = service_fn(handle_request);
+    let log_service_fn = layer_fn(|service| LogService {
+        service,
+        target: "tower-docs",
+    });
+    let ip_allow_service_fn = layer_fn(|service| IpAllowService {
+        service,
+        target: "tower-docs",
+    });
+
+    let mut tower_service = ServiceBuilder::new()
+        .layer(ip_allow_service_fn)
+        .layer(log_service_fn)
+        .service(service_fn);
     loop {
         let request = match receiver.recv().await {
             Some(r) => r,
@@ -111,12 +156,16 @@ async fn handle_task(
                 return Ok(());
             }
         };
-        let resp = handle_request(request).await;
+        let gateway_request = GatewayRequest::new(request, remote_addr.clone());
+
+        let resp = tower_service.call(gateway_request).await?;
+
         sender.send_and_flush(resp).await.map_err(Into::into)?;
     }
 }
 
-async fn handle_request(req: Request) -> Response {
+async fn handle_request(gateway_request: GatewayRequest) -> Result<Response, anyhow::Error> {
+    let req = gateway_request.request;
     let mut headers = HeaderMap::new();
     headers.insert("Server", "monoio-http-demo".parse().unwrap());
     let mut has_error = false;
@@ -143,9 +192,9 @@ async fn handle_request(req: Request) -> Response {
     } else {
         StatusCode::NO_CONTENT
     };
-    Builder::new()
+    Ok(Builder::new()
         .status(status)
         .header("Server", "monoio-http-demo")
         .body(payload)
-        .unwrap()
+        .unwrap())
 }
