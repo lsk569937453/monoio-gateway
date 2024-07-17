@@ -3,6 +3,8 @@ use super::app_error::AppError;
 use core::fmt::Debug;
 use http::HeaderMap;
 use http::HeaderValue;
+use rand::thread_rng;
+use rand::Rng;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -60,8 +62,7 @@ pub struct BaseRoute {
     pub anomaly_detection_status: AnomalyDetectionStatus,
 }
 fn default_base_route_id() -> String {
-    let id = Uuid::new_v4();
-    id.to_string()
+    "aa".to_string()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

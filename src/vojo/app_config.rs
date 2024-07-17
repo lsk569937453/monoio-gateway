@@ -1,9 +1,7 @@
 use super::allow_deny_ip::AllowResult;
-use super::app_config_vistor::ApiServiceVistor;
-use super::app_config_vistor::ServiceConfigVistor;
+
 use crate::vojo::allow_deny_ip::AllowDenyObject;
-use crate::vojo::app_config_vistor::from_loadbalancer_strategy_vistor;
-use crate::vojo::app_config_vistor::RouteVistor;
+
 use crate::vojo::app_error::AppError;
 use crate::vojo::authentication::AuthenticationStrategy;
 use crate::vojo::rate_limit::RatelimitStrategy;
@@ -13,8 +11,7 @@ use http::HeaderValue;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::mpsc;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Matcher {
     pub prefix: String,
@@ -28,63 +25,23 @@ pub struct LivenessConfig {
 pub struct LivenessStatus {
     pub current_liveness_count: i32,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Route {
+    #[serde(default = "default_route_id")]
     pub route_id: String,
     pub host_name: Option<String>,
     pub matcher: Option<Matcher>,
     pub allow_deny_list: Option<Vec<AllowDenyObject>>,
     pub authentication: Option<Box<dyn AuthenticationStrategy>>,
-    pub liveness_status: Arc<RwLock<LivenessStatus>>,
+
     pub rewrite_headers: Option<HashMap<String, String>>,
     pub liveness_config: Option<LivenessConfig>,
     pub ratelimit: Option<Box<dyn RatelimitStrategy>>,
     pub route_cluster: LoadbalancerStrategy,
 }
-impl Route {
-    pub async fn from(route_vistor: RouteVistor) -> Result<Route, AppError> {
-        let cloned_cluster = route_vistor.route_cluster.clone();
-        let new_matcher = route_vistor.matcher.clone().map(|mut item| {
-            let src_prefix = item.prefix.clone();
-            if !src_prefix.ends_with('/') {
-                let src_prefix_len = item.prefix.len();
-                item.prefix.insert(src_prefix_len, '/');
-            }
-            if !src_prefix.starts_with('/') {
-                item.prefix.insert(0, '/')
-            }
-            let path_rewrite = item.prefix_rewrite.clone();
-            // if !path_rewrite.ends_with('/') {
-            //     let src_prefix_rewrite_len = item.prefix_rewrite.len();
-            //     item.prefix_rewrite.insert(src_prefix_rewrite_len, '/');
-            // }
-            if !path_rewrite.starts_with('/') {
-                item.prefix_rewrite.insert(0, '/')
-            }
-            item
-        });
-
-        let count = cloned_cluster.get_routes_len() as i32;
-
-        Ok(Route {
-            route_id: route_vistor.route_id,
-            host_name: route_vistor.host_name,
-            matcher: new_matcher,
-            allow_deny_list: route_vistor.allow_deny_list,
-            authentication: route_vistor.authentication,
-            anomaly_detection: route_vistor.anomaly_detection,
-            liveness_status: Arc::new(RwLock::new(LivenessStatus {
-                current_liveness_count: count,
-            })),
-            rewrite_headers: route_vistor.rewrite_headers,
-            liveness_config: route_vistor.liveness_config,
-            health_check: route_vistor.health_check,
-            ratelimit: route_vistor.ratelimit,
-            route_cluster: from_loadbalancer_strategy_vistor(route_vistor.route_cluster),
-        })
-    }
+fn default_route_id() -> String {
+    "000".to_string()
 }
-
 impl Route {
     pub fn is_matched(
         &self,
@@ -188,52 +145,48 @@ pub enum ServiceType {
     Http2,
     Http2Tls,
 }
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServiceConfig {
     pub server_type: ServiceType,
     pub cert_str: Option<String>,
     pub key_str: Option<String>,
     pub routes: Vec<Route>,
 }
-impl ServiceConfig {
-    pub async fn from(service_config_vistor: ServiceConfigVistor) -> Result<Self, AppError> {
-        let mut routes = vec![];
-        for item in service_config_vistor.routes {
-            routes.push(Route::from(item).await?)
-        }
-        Ok(ServiceConfig {
-            server_type: service_config_vistor.server_type,
-            cert_str: service_config_vistor.cert_str,
-            key_str: service_config_vistor.key_str,
-            routes,
-        })
-    }
-}
-#[derive(Debug, Clone, Default)]
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiService {
     pub listen_port: i32,
+    #[serde(skip)]
     pub api_service_id: String,
     pub service_config: ServiceConfig,
+    #[serde(skip, default = "default_sender")]
+    pub sender: mpsc::Sender<()>,
 }
-impl ApiService {
-    pub async fn from(api_service_vistor: ApiServiceVistor) -> Result<Self, AppError> {
-        let api_service_config = ServiceConfig::from(api_service_vistor.service_config).await?;
-        Ok(ApiService {
-            listen_port: api_service_vistor.listen_port,
-            api_service_id: api_service_vistor.api_service_id,
-            service_config: api_service_config,
-        })
+fn default_sender() -> mpsc::Sender<()> {
+    let (sender, _receiver) = mpsc::channel(1);
+    sender
+}
+
+impl Default for ApiService {
+    fn default() -> Self {
+        let (sender, _receiver) = mpsc::channel(1);
+        Self {
+            listen_port: 0, // Provide default values for each field
+            api_service_id: String::default(),
+            service_config: ServiceConfig::default(), // Initialize ServiceConfig with its default value
+            sender,                                   // Use the default value for Sender<()>
+        }
     }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct StaticConifg {
+pub struct StaticConfig {
     pub access_log: Option<String>,
     pub database_url: Option<String>,
     pub admin_port: String,
     pub config_file_path: Option<String>,
 }
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
-    pub static_config: StaticConifg,
-    pub api_service_config: Vec<ApiService>,
+    pub static_config: StaticConfig,
+    pub api_service_config: HashMap<String, ApiService>,
 }

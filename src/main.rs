@@ -1,5 +1,7 @@
 use crate::middleware::log_service::LogService;
-use anyhow::anyhow;
+use futures::channel::mpsc::UnboundedReceiver;
+use futures::channel::mpsc::UnboundedSender;
+use futures::StreamExt;
 use http::{response::Builder, HeaderMap, StatusCode};
 use monoio::io::AsyncReadRent;
 use monoio::io::AsyncWriteRentExt;
@@ -36,21 +38,22 @@ extern crate serde;
 extern crate async_trait;
 use crate::control_plane::rest_api::start_control_plane;
 use crate::middleware::ip_allow_service::IpAllowService;
+use futures::channel::mpsc::unbounded;
 use tracing_subscriber::FmtSubscriber;
 use vojo::gateway_request;
-use vojo::gateway_request::GatewayRequest;
+use vojo::gateway_request::GatewayRequest; // 0.3.8
 fn main() -> Result<(), anyhow::Error> {
-    std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        starts_control_plane();
-    });
-    let cpus = num_cpus::get();
-    println!("Cpu core is {}", cpus);
-
     std::thread::scope(|s| {
+        let cpus = num_cpus::get();
+        println!("Cpu core is {}", cpus);
+        let mut senders = vec![];
+
         // let addr_clone = addr.clone();
         // let database_clone = database_holder.clone();
         for i in 0..cpus {
+            let (tx, rx) = unbounded();
+
+            senders.push(tx);
             println!("thread is {}", i);
             // let addr_clone1 = addr_clone.clone();
             // let database_clone1 = database_clone.clone();
@@ -61,25 +64,31 @@ fn main() -> Result<(), anyhow::Error> {
                     .build()
                     .unwrap();
                 rt.block_on(async {
-                    main_with_error().await;
+                    main_with_error(rx).await;
                 });
             });
         }
+        println!("aaaaaaaa");
+
+        s.spawn(move || {
+            let _ = starts_control_plane(senders);
+        });
     });
     Ok(())
 }
-fn starts_control_plane() -> Result<(), AppError> {
+fn starts_control_plane(senders: Vec<UnboundedSender<String>>) -> Result<(), AppError> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
         .map_err(|e| AppError(e.to_string()))?;
+
     rt.block_on(async {
-        start_control_plane(8888).await;
+        let _ = start_control_plane(senders, 8870).await;
     });
     Ok(())
 }
-async fn main_with_error() {
+async fn main_with_error(mut receiver: UnboundedReceiver<String>) {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(tracing::Level::DEBUG)
         .finish();
@@ -88,15 +97,16 @@ async fn main_with_error() {
     let listener = TcpListener::bind("0.0.0.0:8080").unwrap();
     info!("Listening 0.0.0.0:8080");
     loop {
-        let incoming = listener.accept().await;
-        match incoming {
-            Ok((stream, addr)) => {
-                // println!("accepted a connection from {}", addr);
+        println!("ccxxxcc");
+        monoio::select! {
+        Ok((stream, addr)) = listener.accept() => {
                 monoio::spawn(handle_connection(stream, addr.to_string()));
-            }
-            Err(e) => {
-                // println!("accepted connection failed: {}", e);
-            }
+        }
+        app_config_str = receiver.next() => {
+            println!("cccc");
+            info!("receive config:{:?}",app_config_str);
+        }
+
         }
     }
 }
@@ -110,7 +120,7 @@ async fn handle_connection(stream: TcpStream, addr: String) {
     loop {
         match receiver.next().await {
             None => {
-                // println!("connection closed, connection handler exit");
+                println!("connection closed, connection handler exit");
                 return;
             }
             Some(Err(_)) => {

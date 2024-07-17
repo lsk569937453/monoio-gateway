@@ -2,7 +2,6 @@ use crate::constants::common_constants::DEFAULT_TEMPORARY_DIR;
 
 use crate::vojo::app_config::ApiService;
 use crate::vojo::app_config::Route;
-use crate::vojo::app_config::ServiceType;
 
 use crate::vojo::app_config::AppConfig;
 use crate::vojo::app_error::AppError;
@@ -12,25 +11,23 @@ use axum::response::IntoResponse;
 use axum::routing::delete;
 use axum::routing::{get, post, put};
 use axum::Router;
+use futures::channel::mpsc::UnboundedSender as Sender;
+use futures::SinkExt;
 use std::convert::Infallible;
 use std::env;
 use std::net::SocketAddr;
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 static INTERNAL_SERVER_ERROR: &str = "Internal Server Error";
 
 async fn get_app_config(
-    State(state): State<Handler>,
+    State(state): State<Vec<Sender<String>>>,
 ) -> Result<impl axum::response::IntoResponse, Infallible> {
-    let app_config = state.shared_app_config.lock().await;
-    let cloned_config = app_config.clone();
-    drop(app_config);
     let data = BaseResponse {
         response_code: 0,
-        response_object: cloned_config,
+        response_object: 0,
     };
     let res = match serde_json::to_string(&data) {
         Ok(json) => (axum::http::StatusCode::OK, json),
@@ -43,7 +40,7 @@ async fn get_app_config(
 }
 
 async fn post_app_config(
-    State(state): State<Handler>,
+    State(state): State<Vec<Sender<String>>>,
     axum::extract::Json(api_services_vistor): axum::extract::Json<ApiService>,
 ) -> Result<impl axum::response::IntoResponse, Infallible> {
     let t = match post_app_config_with_error(api_services_vistor, state).await {
@@ -58,36 +55,20 @@ async fn post_app_config(
 }
 async fn post_app_config_with_error(
     mut api_service: ApiService,
-    handler: Handler,
+    mut handler: Vec<Sender<String>>,
 ) -> Result<impl axum::response::IntoResponse, AppError> {
-    let current_type = api_service.service_config.server_type.clone();
-    if current_type == ServiceType::Https || current_type == ServiceType::Http2Tls {
-        validate_tls_config(
-            api_service.service_config.cert_str.clone(),
-            api_service.service_config.key_str.clone(),
-        )?;
-    }
-    let cloned_port = api_service.listen_port;
-    let (sender, receiver) = mpsc::channel::<()>(1);
-    api_service.api_service_id.clone_from(&uuid);
-    api_service.sender = sender;
-    let mut rw_global_lock = handler.shared_app_config.lock().await;
-    rw_global_lock
-        .api_service_config
-        .insert(uuid.clone(), api_service);
-    drop(rw_global_lock);
-    let mut cloned_handler = handler.clone();
-    tokio::spawn(async move {
-        let lock = cloned_handler.shared_app_config.lock().await;
-        let cloned_config = lock.clone();
-        if let Err(err) = save_config_to_file(cloned_config).await {
-            error!("Save file error,the error is {}!", err);
+    let api_service_str =
+        serde_json::to_string(&api_service).map_err(|e| AppError(e.to_string()))?;
+    info!("start send");
+    for item in handler.iter_mut() {
+        info!("start send1");
+
+        if let Err(e) = item.send(api_service_str.clone()).await {
+            println!("e{}", e);
         }
-        drop(lock);
-        let _ = cloned_handler
-            .start_proxy(cloned_port, receiver, current_type, uuid)
-            .await;
-    });
+    }
+    info!("end send");
+
     let data = BaseResponse {
         response_code: 0,
         response_object: 0,
@@ -97,18 +78,8 @@ async fn post_app_config_with_error(
 }
 async fn delete_route(
     axum::extract::Path(_route_id): axum::extract::Path<String>,
-    State(state): State<Handler>,
+    State(state): State<Vec<Sender<String>>>,
 ) -> Result<impl axum::response::IntoResponse, Infallible> {
-    let rw_global_lock = state.shared_app_config.lock().await;
-
-    let cloned_config = rw_global_lock.clone();
-
-    tokio::spawn(async {
-        if let Err(err) = save_config_to_file(cloned_config).await {
-            error!("Save file error,the error is {}!", err);
-        }
-    });
-
     let data = BaseResponse {
         response_code: 0,
         response_object: 0,
@@ -118,7 +89,7 @@ async fn delete_route(
 }
 
 async fn put_route(
-    State(state): State<Handler>,
+    State(state): State<Vec<Sender<String>>>,
     axum::extract::Json(route_vistor): axum::extract::Json<Route>,
 ) -> Result<impl axum::response::IntoResponse, Infallible> {
     match put_route_with_error(route_vistor, state).await {
@@ -126,15 +97,10 @@ async fn put_route(
         Err(e) => Ok((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
-async fn put_route_with_error(_route_vistor: Route, handler: Handler) -> Result<String, AppError> {
-    let rw_global_lock = handler.shared_app_config.lock().await;
-
-    let cloned_config = rw_global_lock.clone();
-    tokio::spawn(async {
-        if let Err(err) = save_config_to_file(cloned_config).await {
-            error!("Save file error,the error is {}!", err);
-        }
-    });
+async fn put_route_with_error(
+    _route_vistor: Route,
+    handler: Vec<Sender<String>>,
+) -> Result<String, AppError> {
     let data = BaseResponse {
         response_code: 0,
         response_object: 0,
@@ -163,17 +129,17 @@ async fn save_config_to_file(data: AppConfig) -> Result<(), AppError> {
     Ok(())
 }
 
-pub fn get_router(handler: Handler) -> Router {
+pub fn get_router(senders: Vec<Sender<String>>) -> Router {
     axum::Router::new()
         .route("/appConfig", get(get_app_config).post(post_app_config))
         .route("/route/:id", delete(delete_route))
         .route("/route", put(put_route))
-        .with_state(handler)
+        .with_state(senders)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
 }
-pub async fn start_control_plane(port: i32) -> Result<(), AppError> {
-    let app = get_router(handler);
+pub async fn start_control_plane(senders: Vec<Sender<String>>, port: i32) -> Result<(), AppError> {
+    let app = get_router(senders);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port as u16));
 
