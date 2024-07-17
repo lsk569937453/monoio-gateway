@@ -6,6 +6,7 @@ use crate::vojo::app_config::Route;
 use crate::vojo::app_config::AppConfig;
 use crate::vojo::app_error::AppError;
 use crate::vojo::base_response::BaseResponse;
+use crate::vojo::handler::Handler;
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::delete;
@@ -23,7 +24,7 @@ use tower_http::trace::TraceLayer;
 static INTERNAL_SERVER_ERROR: &str = "Internal Server Error";
 
 async fn get_app_config(
-    State(state): State<Vec<Sender<String>>>,
+    State(state): State<Handler>,
 ) -> Result<impl axum::response::IntoResponse, Infallible> {
     let data = BaseResponse {
         response_code: 0,
@@ -40,7 +41,7 @@ async fn get_app_config(
 }
 
 async fn post_app_config(
-    State(state): State<Vec<Sender<String>>>,
+    State(state): State<Handler>,
     axum::extract::Json(api_services_vistor): axum::extract::Json<ApiService>,
 ) -> Result<impl axum::response::IntoResponse, Infallible> {
     let t = match post_app_config_with_error(api_services_vistor, state).await {
@@ -55,18 +56,12 @@ async fn post_app_config(
 }
 async fn post_app_config_with_error(
     mut api_service: ApiService,
-    mut handler: Vec<Sender<String>>,
+    mut handler: Handler,
 ) -> Result<impl axum::response::IntoResponse, AppError> {
     let api_service_str =
         serde_json::to_string(&api_service).map_err(|e| AppError(e.to_string()))?;
     info!("start send");
-    for item in handler.iter_mut() {
-        info!("start send1");
 
-        if let Err(e) = item.send(api_service_str.clone()).await {
-            println!("e{}", e);
-        }
-    }
     info!("end send");
 
     let data = BaseResponse {
@@ -78,7 +73,7 @@ async fn post_app_config_with_error(
 }
 async fn delete_route(
     axum::extract::Path(_route_id): axum::extract::Path<String>,
-    State(state): State<Vec<Sender<String>>>,
+    State(state): State<Handler>,
 ) -> Result<impl axum::response::IntoResponse, Infallible> {
     let data = BaseResponse {
         response_code: 0,
@@ -89,7 +84,7 @@ async fn delete_route(
 }
 
 async fn put_route(
-    State(state): State<Vec<Sender<String>>>,
+    State(state): State<Handler>,
     axum::extract::Json(route_vistor): axum::extract::Json<Route>,
 ) -> Result<impl axum::response::IntoResponse, Infallible> {
     match put_route_with_error(route_vistor, state).await {
@@ -97,10 +92,7 @@ async fn put_route(
         Err(e) => Ok((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
-async fn put_route_with_error(
-    _route_vistor: Route,
-    handler: Vec<Sender<String>>,
-) -> Result<String, AppError> {
+async fn put_route_with_error(_route_vistor: Route, handler: Handler) -> Result<String, AppError> {
     let data = BaseResponse {
         response_code: 0,
         response_object: 0,
@@ -129,17 +121,17 @@ async fn save_config_to_file(data: AppConfig) -> Result<(), AppError> {
     Ok(())
 }
 
-pub fn get_router(senders: Vec<Sender<String>>) -> Router {
+pub fn get_router(handler: Handler) -> Router {
     axum::Router::new()
         .route("/appConfig", get(get_app_config).post(post_app_config))
         .route("/route/:id", delete(delete_route))
         .route("/route", put(put_route))
-        .with_state(senders)
+        .with_state(handler)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
 }
-pub async fn start_control_plane(senders: Vec<Sender<String>>, port: i32) -> Result<(), AppError> {
-    let app = get_router(senders);
+pub async fn start_control_plane(handler: Handler, port: i32) -> Result<(), AppError> {
+    let app = get_router(handler);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port as u16));
 

@@ -1,4 +1,5 @@
 use crate::middleware::log_service::LogService;
+use anyhow::anyhow;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::channel::mpsc::UnboundedSender;
 use futures::StreamExt;
@@ -26,6 +27,7 @@ use tower::Layer;
 use tower::ServiceBuilder;
 use tower::{service_fn, BoxError, Service, ServiceExt};
 use vojo::app_error::AppError;
+use vojo::handler::Handler;
 mod constants;
 mod control_plane;
 mod middleware;
@@ -41,21 +43,20 @@ use crate::middleware::ip_allow_service::IpAllowService;
 use futures::channel::mpsc::unbounded;
 use monoio::io::Canceller;
 use std::pin::pin;
+use std::sync::RwLock;
 use tracing_subscriber::FmtSubscriber;
 use vojo::gateway_request;
 use vojo::gateway_request::GatewayRequest; // 0.3.8
 fn main() -> Result<(), anyhow::Error> {
     std::thread::scope(|s| {
+        let handler = Handler::new();
+
         let cpus = num_cpus::get();
         println!("Cpu core is {}", cpus);
-        let mut senders = vec![];
 
-        // let addr_clone = addr.clone();
-        // let database_clone = database_holder.clone();
         for i in 0..cpus {
-            let (tx, rx) = unbounded();
+            let handle_clone1 = handler.clone();
 
-            senders.push(tx);
             println!("thread is {}", i);
             // let addr_clone1 = addr_clone.clone();
             // let database_clone1 = database_clone.clone();
@@ -66,19 +67,19 @@ fn main() -> Result<(), anyhow::Error> {
                     .build()
                     .unwrap();
                 rt.block_on(async {
-                    main_with_error(rx).await;
+                    main_with_error(handle_clone1).await;
                 });
             });
         }
-        println!("aaaaaaaa");
+        let handle_clone = handler.clone();
 
         s.spawn(move || {
-            let _ = starts_control_plane(senders);
+            let _ = starts_control_plane(handle_clone);
         });
     });
     Ok(())
 }
-fn starts_control_plane(senders: Vec<UnboundedSender<String>>) -> Result<(), AppError> {
+fn starts_control_plane(hander: Handler) -> Result<(), AppError> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -86,11 +87,11 @@ fn starts_control_plane(senders: Vec<UnboundedSender<String>>) -> Result<(), App
         .map_err(|e| AppError(e.to_string()))?;
 
     rt.block_on(async {
-        let _ = start_control_plane(senders, 8870).await;
+        let _ = start_control_plane(hander, 8870).await;
     });
     Ok(())
 }
-async fn main_with_error(mut receiver: UnboundedReceiver<String>) {
+async fn main_with_error(handler: Handler) {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(tracing::Level::DEBUG)
         .finish();
@@ -100,33 +101,17 @@ async fn main_with_error(mut receiver: UnboundedReceiver<String>) {
 
     info!("Listening 0.0.0.0:8080");
     loop {
-        let canceller = Canceller::new();
-        let mut io_fut = pin!(listener.cancelable_accept(canceller.handle()));
-        monoio::select! {
-            Ok((stream, addr)) = &mut io_fut =>{
-
-                monoio::spawn(handle_connection(stream, addr.to_string()));
-            }
-             app_config_str = receiver.next()=>{
-                 println!("accept timeout but not sure!");
-                canceller.cancel();
-                if let Ok((stream, addr))=io_fut.await{
-                    monoio::spawn(handle_connection(stream, addr.to_string()));
-                }else{
-                    info!("app_config_str：{:?}",app_config_str);
-                    println!("accept timeout but not sure!");
-                }
-
-            }
+        if let Ok((stream, addr)) = listener.accept().await {
+            monoio::spawn(handle_connection(handler.clone(), stream, addr.to_string()));
         }
     }
 }
-async fn handle_connection(stream: TcpStream, addr: String) {
+async fn handle_connection(handler: Handler, stream: TcpStream, addr: String) {
     let (r, w) = stream.into_split();
     let sender = GenericEncoder::new(w);
     let mut receiver = RequestDecoder::new(r);
     let (mut tx, rx) = spsc_pair();
-    monoio::spawn(handle_task(rx, sender, addr));
+    monoio::spawn(handle_task(handler, rx, sender, addr));
 
     loop {
         match receiver.next().await {
@@ -152,6 +137,7 @@ async fn handle_connection(stream: TcpStream, addr: String) {
 }
 
 async fn handle_task(
+    handler: Handler,
     mut receiver: SPSCReceiver<Request>,
     mut sender: impl Sink<Response, Error = impl Into<HttpError>>,
     remote_addr: String,
@@ -177,6 +163,14 @@ async fn handle_task(
                 return Ok(());
             }
         };
+        let data = handler
+            .shared_app_config
+            .read()
+            .map_err(|e| anyhow!("{}", e))?
+            .clone();
+        if data.api_service_config.contains_key("k") {
+            println!("c");
+        }
         let gateway_request = GatewayRequest::new(request, remote_addr.clone());
 
         let resp = tower_service.call(gateway_request).await?;
