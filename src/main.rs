@@ -49,28 +49,44 @@ use tracing_subscriber::FmtSubscriber;
 use vojo::gateway_request;
 
 use vojo::gateway_request::GatewayRequest; // 0.3.8
+async fn start(port: i32, handler: Handler) {
+    monoio::spawn(async move {
+        main_with_error(port.clone(), handler).await;
+    });
+}
 fn main() -> Result<(), anyhow::Error> {
     std::thread::scope(|s| {
         let handler = Handler::new();
-
         let cpus = num_cpus::get();
         println!("Cpu core is {}", cpus);
-
         for i in 0..cpus {
             let handle_clone1 = handler.clone();
+            let handle_clone2 = handler.clone();
 
             println!("thread is {}", i);
-            // let addr_clone1 = addr_clone.clone();
-            // let database_clone1 = database_clone.clone();
             s.spawn(move || {
                 let mut rt = monoio::RuntimeBuilder::<monoio::IoUringDriver>::new()
                     .with_entries(256)
                     .enable_timer()
                     .build()
                     .unwrap();
+
                 rt.block_on(async {
-                    main_with_error(handle_clone1).await;
+                    main_with_error(8080, handle_clone1).await;
                 });
+                println!("cccccc");
+            });
+            s.spawn(move || {
+                let mut rt = monoio::RuntimeBuilder::<monoio::IoUringDriver>::new()
+                    .with_entries(256)
+                    .enable_timer()
+                    .build()
+                    .unwrap();
+
+                rt.block_on(async {
+                    main_with_error(8888, handle_clone2).await;
+                });
+                println!("cccccc");
             });
         }
         let handle_clone = handler.clone();
@@ -93,16 +109,17 @@ fn starts_control_plane(hander: Handler) -> Result<(), AppError> {
     });
     Ok(())
 }
-async fn main_with_error(handler: Handler) {
+async fn main_with_error(port: i32, handler: Handler) {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(tracing::Level::DEBUG)
         .finish();
     // Initialize the tracing subscriber
     let _ = tracing::subscriber::set_global_default(subscriber);
-    let listener = TcpListener::bind("0.0.0.0:8080").unwrap();
+    let addr = format!("0.0.0.0:{port}");
+    let listener = TcpListener::bind(addr.clone()).unwrap();
     let client = Client::default();
 
-    info!("Listening 0.0.0.0:8080");
+    info!("Listening {}", addr);
     loop {
         if let Ok((stream, addr)) = listener.accept().await {
             monoio::spawn(handle_connection(
@@ -195,7 +212,6 @@ async fn handle_request(gateway_request: GatewayRequest) -> Result<Response, any
         .send()
         .await?;
     let http_resp = resp.bytes().await.unwrap();
-    // println!("{:?}", http_resp);
 
     let req = gateway_request.request;
     let mut headers = HeaderMap::new();
