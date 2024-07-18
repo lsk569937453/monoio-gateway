@@ -67,22 +67,22 @@ services:
           memory: 8192M
     depends_on:
       - backend
-  silverwind:
-    image: lsk569937453/silverwind:test
-    # image: lsk569937453/silverwind:test
-    container_name: silverwind
-    environment:
-      CONFIG_FILE_PATH: /data/app/app_config.yaml
-      RUST_BACKTRACE: 1
-      JEMALLOC_SYS_WITH_MALLOC_CONF: background_thread:true,narenas:1,tcache:false,dirty_decay_ms:0,muzzy_decay_ms:0,abort_conf:true
-    volumes:
-      - ./app_config.yaml:/data/app/app_config.yaml
-    restart: unless-stopped
-    ports:
-      - 6667:6667
-      - 8870:8870
-    deploy:
-      resources:
-        limits:
-          cpus: "4.0"
-          memory: 8192M
+  # silverwind:
+  #   image: lsk569937453/silverwind:test
+  #   # image: lsk569937453/silverwind:test
+  #   container_name: silverwind
+  #   environment:
+  #     CONFIG_FILE_PATH: /data/app/app_config.yaml
+  #     RUST_BACKTRACE: 1
+  #     JEMALLOC_SYS_WITH_MALLOC_CONF: background_thread:true,narenas:1,tcache:false,dirty_decay_ms:0,muzzy_decay_ms:0,abort_conf:true
+  #   volumes:
+  #     - ./app_config.yaml:/data/app/app_config.yaml
+  #   restart: unless-stopped
+  #   ports:
+  #     - 6667:6667
+  #     - 8870:8870
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: "4.0"
+  #         memory: 8192M
