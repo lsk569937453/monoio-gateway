@@ -1,0 +1,87 @@
+version: '3.9'
+
+services:
+  hey:
+    image: demisto/rakyll-hey:1.0.0.44140
+    container_name: hey
+    tty: true
+    deploy:
+      resources:
+        limits:
+          cpus: "20.0"
+          memory: 8192M
+        reservations:
+          cpus: '20.0'
+          memory: 20M
+  kt:
+    image: ghcr.io/lsk569937453/kt:0.0.8
+    container_name: kt
+    tty: true
+    deploy:
+      resources:
+        limits:
+          cpus: "20.0"
+          memory: 8192M
+  rcurl:
+    image: ghcr.io/lsk569937453/rcurl:0.0.25
+    container_name: rcurl
+    tty: true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 8192M
+  backend:
+    image: ghcr.io/lsk569937453/echo-server:0.0.3
+    container_name: backend
+    ports:
+      - "9394:8080"
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 8192M
+  gateway:
+    image: lsk569937453/monoio-gateway:test
+    container_name: gateway
+    ports:
+      - "8080:8080"
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8192M
+  nginx:
+    image: nginx:1.27.0-perl
+    container_name: nginx
+    restart: unless-stopped
+    ports:
+      - 80:80
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    sysctls:
+      net.ipv4.ip_local_port_range: "10240 65535"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 8192M
+  silverwind:
+    image: ghcr.io/lsk569937453/silverwind:0.0.20
+    # image: lsk569937453/silverwind:test
+    container_name: silverwind
+    environment:
+      CONFIG_FILE_PATH: /data/app/app_config.yaml
+      RUST_BACKTRACE: 1
+      JEMALLOC_SYS_WITH_MALLOC_CONF: background_thread:true,narenas:1,tcache:false,dirty_decay_ms:0,muzzy_decay_ms:0,abort_conf:true
+    volumes:
+      - ./app_config.yaml:/data/app/app_config.yaml
+    restart: unless-stopped
+    ports:
+      - 6667:6667
+      - 8870:8870
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 8192M
