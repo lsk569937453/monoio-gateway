@@ -1,5 +1,6 @@
 use crate::constants::common_constants::DEFAULT_TEMPORARY_DIR;
 
+use crate::proxy::http_proxy::create_monoio_runtime;
 use crate::vojo::app_config::ApiService;
 use crate::vojo::app_config::Route;
 
@@ -61,7 +62,8 @@ async fn post_app_config_with_error(
     let api_service_str =
         serde_json::to_string(&api_service).map_err(|e| AppError(e.to_string()))?;
     info!("start send");
-
+    let port = api_service.listen_port;
+    create_monoio_runtime(port, handler);
     info!("end send");
 
     let data = BaseResponse {
