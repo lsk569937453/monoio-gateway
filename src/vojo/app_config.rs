@@ -27,8 +27,6 @@ pub struct LivenessStatus {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Route {
-    #[serde(default = "default_route_id")]
-    pub route_id: String,
     pub host_name: Option<String>,
     pub matcher: Option<Matcher>,
     pub allow_deny_list: Option<Vec<AllowDenyObject>>,
@@ -39,9 +37,7 @@ pub struct Route {
     pub ratelimit: Option<Box<dyn RatelimitStrategy>>,
     pub route_cluster: LoadbalancerStrategy,
 }
-fn default_route_id() -> String {
-    "000".to_string()
-}
+
 impl Route {
     pub fn is_matched(
         &self,
@@ -156,11 +152,7 @@ pub struct ServiceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiService {
     pub listen_port: i32,
-    #[serde(skip)]
-    pub api_service_id: String,
     pub service_config: ServiceConfig,
-    #[serde(skip, default = "default_sender")]
-    pub sender: mpsc::Sender<()>,
 }
 fn default_sender() -> mpsc::Sender<()> {
     let (sender, _receiver) = mpsc::channel(1);
@@ -169,12 +161,9 @@ fn default_sender() -> mpsc::Sender<()> {
 
 impl Default for ApiService {
     fn default() -> Self {
-        let (sender, _receiver) = mpsc::channel(1);
         Self {
-            listen_port: 0, // Provide default values for each field
-            api_service_id: String::default(),
+            listen_port: 0,                           // Provide default values for each field
             service_config: ServiceConfig::default(), // Initialize ServiceConfig with its default value
-            sender,                                   // Use the default value for Sender<()>
         }
     }
 }
@@ -188,5 +177,5 @@ pub struct StaticConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     pub static_config: StaticConfig,
-    pub api_service_config: HashMap<String, ApiService>,
+    pub api_service_config: HashMap<i32, ApiService>,
 }

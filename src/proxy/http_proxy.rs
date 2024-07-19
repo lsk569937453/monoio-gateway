@@ -1,6 +1,7 @@
 use crate::middleware::log_service::LogService;
 use crate::vojo::app_error::AppError;
 use crate::vojo::handler::Handler;
+use bytes::Bytes;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::channel::mpsc::UnboundedSender;
 use futures::StreamExt;
@@ -96,12 +97,12 @@ async fn handle_connection(client: Client, handler: Handler, stream: TcpStream, 
                 return;
             }
             Some(Err(_)) => {
-                // println!("receive request failed, connection handler exit");
+                println!("receive request failed, connection handler exit");
                 return;
             }
             Some(Ok(item)) => match tx.send(item).await {
                 Err(_) => {
-                    // println!("request handler dropped, connection handler exit");
+                    println!("request handler dropped, connection handler exit");
                     return;
                 }
                 Ok(_) => {
@@ -145,60 +146,72 @@ async fn handle_task(
             .read()
             .map_err(|e| AppError(e.to_string()))?
             .clone();
-        if data.api_service_config.contains_key("k") {
-            println!("c");
-        }
+
         let gateway_request = GatewayRequest::new(request, remote_addr.clone(), client.clone());
 
-        let resp = tower_service.call(gateway_request).await?;
+        let resp = tower_service.call(gateway_request).await;
 
-        sender
-            .send_and_flush(resp)
-            .await
-            .map_err(Into::into)
-            .map_err(|e| AppError(e.to_string()))?;
+        match resp {
+            Ok(s) => sender
+                .send_and_flush(s)
+                .await
+                .map_err(Into::into)
+                .map_err(|e| AppError(e.to_string()))?,
+            Err(e) => {
+                error!("{}", e);
+            }
+        }
     }
 }
 
 async fn handle_request(gateway_request: GatewayRequest) -> Result<Response, AppError> {
-    let resp = gateway_request
+    let resp_result = gateway_request
         .client
-        .get("http://backend:8080")
+        .get("http://backend:8080/get")
         .send()
-        .await
-        .map_err(|e| AppError(e.to_string()))?;
+        .await;
+
+    // if resp_result.is_err() {
+    //     return Ok(Response::builder()
+    //         .status(StatusCode::INTERNAL_SERVER_ERROR)
+    //         .body(Payload::None)
+    //         .unwrap());
+    // };
+    let resp = resp_result.map_err(|e| AppError(e.to_string()))?;
+    info!("has receive response,header is:{:?}", resp.headers());
     let http_resp = resp.bytes().await.unwrap();
+    let res = Payload::Fixed(FixedPayload::new(http_resp));
 
-    let req = gateway_request.request;
-    let mut headers = HeaderMap::new();
-    headers.insert("Server", "monoio-http-demo".parse().unwrap());
-    let mut has_error = false;
-    let mut has_payload = false;
-    let payload = match req.into_body() {
-        Payload::None => Payload::None,
-        Payload::Fixed(mut p) => match p.next().await.unwrap() {
-            Ok(data) => {
-                has_payload = true;
-                Payload::Fixed(FixedPayload::new(data))
-            }
-            Err(_) => {
-                has_error = true;
-                Payload::None
-            }
-        },
-        Payload::Stream(_) => unimplemented!(),
-    };
+    // let req = gateway_request.request;
+    // let mut headers = HeaderMap::new();
+    // headers.insert("Server", "monoio-http-demo".parse().unwrap());
+    // let mut has_error = false;
+    // let mut has_payload = false;
+    // let payload = match req.into_body() {
+    //     Payload::None => Payload::None,
+    //     Payload::Fixed(mut p) => match p.next().await.unwrap() {
+    //         Ok(data) => {
+    //             has_payload = true;
+    //             Payload::Fixed(FixedPayload::new(data))
+    //         }
+    //         Err(_) => {
+    //             has_error = true;
+    //             Payload::None
+    //         }
+    //     },
+    //     Payload::Stream(_) => unimplemented!(),
+    // };
 
-    let status = if has_error {
-        StatusCode::INTERNAL_SERVER_ERROR
-    } else if has_payload {
-        StatusCode::OK
-    } else {
-        StatusCode::NO_CONTENT
-    };
+    // let status = if has_error {
+    //     StatusCode::INTERNAL_SERVER_ERROR
+    // } else if has_payload {
+    //     StatusCode::OK
+    // } else {
+    //     StatusCode::NO_CONTENT
+    // };
     Ok(Builder::new()
-        .status(status)
+        .status(StatusCode::OK)
         .header("Server", "monoio-http-demo")
-        .body(payload)
+        .body(res)
         .unwrap())
 }
