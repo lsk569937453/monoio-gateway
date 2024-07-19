@@ -171,47 +171,52 @@ async fn handle_request(gateway_request: GatewayRequest) -> Result<Response, App
         .send()
         .await;
 
-    // if resp_result.is_err() {
-    //     return Ok(Response::builder()
-    //         .status(StatusCode::INTERNAL_SERVER_ERROR)
-    //         .body(Payload::None)
-    //         .unwrap());
-    // };
-    let resp = resp_result.map_err(|e| AppError(e.to_string()))?;
-    info!("has receive response,header is:{:?}", resp.headers());
-    let http_resp = resp.bytes().await.unwrap();
-    let res = Payload::Fixed(FixedPayload::new(http_resp));
+    match resp_result {
+        Ok(resp) => {
+            info!("has receive response,header is:{:?}", resp.headers());
+            let http_resp = resp.bytes().await.unwrap();
+            let res = Payload::Fixed(FixedPayload::new(http_resp));
 
-    // let req = gateway_request.request;
-    // let mut headers = HeaderMap::new();
-    // headers.insert("Server", "monoio-http-demo".parse().unwrap());
-    // let mut has_error = false;
-    // let mut has_payload = false;
-    // let payload = match req.into_body() {
-    //     Payload::None => Payload::None,
-    //     Payload::Fixed(mut p) => match p.next().await.unwrap() {
-    //         Ok(data) => {
-    //             has_payload = true;
-    //             Payload::Fixed(FixedPayload::new(data))
-    //         }
-    //         Err(_) => {
-    //             has_error = true;
-    //             Payload::None
-    //         }
-    //     },
-    //     Payload::Stream(_) => unimplemented!(),
-    // };
+            // let req = gateway_request.request;
+            // let mut headers = HeaderMap::new();
+            // headers.insert("Server", "monoio-http-demo".parse().unwrap());
+            // let mut has_error = false;
+            // let mut has_payload = false;
+            // let payload = match req.into_body() {
+            //     Payload::None => Payload::None,
+            //     Payload::Fixed(mut p) => match p.next().await.unwrap() {
+            //         Ok(data) => {
+            //             has_payload = true;
+            //             Payload::Fixed(FixedPayload::new(data))
+            //         }
+            //         Err(_) => {
+            //             has_error = true;
+            //             Payload::None
+            //         }
+            //     },
+            //     Payload::Stream(_) => unimplemented!(),
+            // };
 
-    // let status = if has_error {
-    //     StatusCode::INTERNAL_SERVER_ERROR
-    // } else if has_payload {
-    //     StatusCode::OK
-    // } else {
-    //     StatusCode::NO_CONTENT
-    // };
-    Ok(Builder::new()
-        .status(StatusCode::OK)
-        .header("Server", "monoio-http-demo")
-        .body(res)
-        .unwrap())
+            // let status = if has_error {
+            //     StatusCode::INTERNAL_SERVER_ERROR
+            // } else if has_payload {
+            //     StatusCode::OK
+            // } else {
+            //     StatusCode::NO_CONTENT
+            // };
+            Ok(Builder::new()
+                .status(StatusCode::OK)
+                .header("Server", "monoio-http-demo")
+                .body(res)
+                .unwrap())
+        }
+        Err(e) => {
+            return Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Payload::Fixed(FixedPayload::new(Bytes::from(
+                    e.to_string(),
+                ))))
+                .unwrap());
+        }
+    }
 }
