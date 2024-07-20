@@ -61,10 +61,8 @@ async fn post_app_config_with_error(
 ) -> Result<impl axum::response::IntoResponse, AppError> {
     let api_service_str =
         serde_json::to_string(&api_service).map_err(|e| AppError(e.to_string()))?;
-    info!("start send");
     let port = api_service.listen_port;
     create_monoio_runtime(port, handler);
-    info!("end send");
 
     let data = BaseResponse {
         response_code: 0,

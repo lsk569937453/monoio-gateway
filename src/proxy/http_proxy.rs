@@ -65,7 +65,6 @@ pub async fn main_with_error(port: i32, handler: Handler) {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(tracing::Level::DEBUG)
         .finish();
-    // Initialize the tracing subscriber
     let _ = tracing::subscriber::set_global_default(subscriber);
     let addr = format!("0.0.0.0:{port}");
     let listener = TcpListener::bind(addr.clone()).unwrap();
@@ -141,13 +140,13 @@ async fn handle_task(
                 return Ok(());
             }
         };
-        let data = handler
-            .shared_app_config
-            .read()
-            .map_err(|e| AppError(e.to_string()))?
-            .clone();
 
-        let gateway_request = GatewayRequest::new(request, remote_addr.clone(), client.clone());
+        let gateway_request = GatewayRequest::new(
+            request,
+            remote_addr.clone(),
+            client.clone(),
+            handler.clone(),
+        );
 
         let resp = tower_service.call(gateway_request).await;
 
