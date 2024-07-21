@@ -1,6 +1,7 @@
 use crate::middleware::log_service::LogService;
 use crate::vojo::app_error::AppError;
 use crate::vojo::handler::Handler;
+use crate::vojo::thread_local_info::ThreadLocalInfo;
 use bytes::Bytes;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::channel::mpsc::UnboundedSender;
@@ -36,6 +37,8 @@ use futures::channel::mpsc::unbounded;
 use monoio::io::Canceller;
 use monoio_http_client::Client;
 use std::pin::pin;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::RwLock;
 use tracing_subscriber::FmtSubscriber;
 
@@ -69,7 +72,7 @@ pub async fn main_with_error(port: i32, handler: Handler) {
     let addr = format!("0.0.0.0:{port}");
     let listener = TcpListener::bind(addr.clone()).unwrap();
     let client = Client::default();
-
+    let thread_local_infos = Arc::new(Mutex::new(ThreadLocalInfo::new()));
     info!("Listening {}", addr);
     loop {
         if let Ok((stream, addr)) = listener.accept().await {
@@ -78,16 +81,30 @@ pub async fn main_with_error(port: i32, handler: Handler) {
                 handler.clone(),
                 stream,
                 addr.to_string(),
+                thread_local_infos.clone(),
             ));
         }
     }
 }
-async fn handle_connection(client: Client, handler: Handler, stream: TcpStream, addr: String) {
+async fn handle_connection(
+    client: Client,
+    handler: Handler,
+    stream: TcpStream,
+    addr: String,
+    thread_local_info_mutex: Arc<Mutex<ThreadLocalInfo>>,
+) {
     let (r, w) = stream.into_split();
     let sender = GenericEncoder::new(w);
     let mut receiver = RequestDecoder::new(r);
     let (mut tx, rx) = spsc_pair();
-    monoio::spawn(handle_task(client, handler, rx, sender, addr));
+    monoio::spawn(handle_task(
+        client,
+        handler,
+        rx,
+        sender,
+        addr,
+        thread_local_info_mutex,
+    ));
 
     loop {
         match receiver.next().await {
@@ -118,6 +135,7 @@ async fn handle_task(
     mut receiver: SPSCReceiver<Request>,
     mut sender: impl Sink<Response, Error = impl Into<HttpError>>,
     remote_addr: String,
+    thread_local_info_mutex: Arc<Mutex<ThreadLocalInfo>>,
 ) -> Result<(), AppError> {
     let service_fn = service_fn(handle_request);
     let log_service_fn = layer_fn(|service| LogService {
@@ -146,6 +164,7 @@ async fn handle_task(
             remote_addr.clone(),
             client.clone(),
             handler.clone(),
+            thread_local_info_mutex.clone(),
         );
 
         let resp = tower_service.call(gateway_request).await;
