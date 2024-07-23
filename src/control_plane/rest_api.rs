@@ -43,9 +43,9 @@ async fn get_app_config(
 
 async fn post_app_config(
     State(state): State<Handler>,
-    axum::extract::Json(api_services_vistor): axum::extract::Json<ApiService>,
+    axum::extract::Json(api_services): axum::extract::Json<ApiService>,
 ) -> Result<impl axum::response::IntoResponse, Infallible> {
-    let t = match post_app_config_with_error(api_services_vistor, state).await {
+    let t = match post_app_config_with_error(api_services, state).await {
         Ok(r) => r.into_response(),
         Err(err) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,

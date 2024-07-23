@@ -2,6 +2,7 @@ use crate::middleware::log_service::LogService;
 use crate::vojo::app_error::AppError;
 use crate::vojo::handler::Handler;
 use crate::vojo::thread_local_info::ThreadLocalInfo;
+use axum::handler;
 use bytes::Bytes;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::channel::mpsc::UnboundedSender;
@@ -32,8 +33,12 @@ use tower::{service_fn, BoxError, Service, ServiceExt};
 
 use crate::control_plane::rest_api::start_control_plane;
 use crate::middleware::ip_allow_service::IpAllowService;
+use crate::middleware::route_service::handle_request;
 use crate::vojo::gateway_request;
+use crate::vojo::gateway_request::GatewayRequest;
+use crossbeam::channel::{bounded, select};
 use futures::channel::mpsc::unbounded;
+use futures::channel::oneshot::channel;
 use monoio::io::Canceller;
 use monoio_http_client::Client;
 use std::pin::pin;
@@ -41,10 +46,17 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
 use tracing_subscriber::FmtSubscriber;
-
-use crate::vojo::gateway_request::GatewayRequest;
-
 pub fn create_monoio_runtime(port: i32, handler: Handler) {
+    let lock = handler.clone();
+
+    let mut handler_write_lock = lock.senders.lock().unwrap();
+
+    let first_key = handler_write_lock.keys().cloned().next().unwrap();
+    let removed_list = handler_write_lock.remove(&first_key).unwrap();
+    drop(handler_write_lock);
+    for item in removed_list {
+        item.send(1).unwrap();
+    }
     let cpus = num_cpus::get();
     println!("Cpu core is {}", cpus);
     for i in 0..cpus {
@@ -52,15 +64,20 @@ pub fn create_monoio_runtime(port: i32, handler: Handler) {
 
         println!("thread is {}", i);
         std::thread::spawn(move || {
+            let (stop_tx, stop_rx) = channel();
+            let lock = handle_clone1.clone();
+            let mut handler_write_lock = lock.senders.lock().unwrap();
+            handler_write_lock
+                .entry(port)
+                .or_insert(Vec::new())
+                .push(stop_tx);
+            drop(handler_write_lock);
             let mut rt = monoio::RuntimeBuilder::<monoio::IoUringDriver>::new()
                 .with_entries(256)
                 .enable_timer()
                 .build()
                 .unwrap();
-
-            rt.block_on(async {
-                main_with_error(port, handle_clone1).await;
-            });
+            rt.block_on(async { main_with_error(port, handle_clone1).await });
         });
     }
 }
@@ -77,6 +94,7 @@ pub async fn main_with_error(port: i32, handler: Handler) {
     loop {
         if let Ok((stream, addr)) = listener.accept().await {
             monoio::spawn(handle_connection(
+                port,
                 client.clone(),
                 handler.clone(),
                 stream,
@@ -87,6 +105,7 @@ pub async fn main_with_error(port: i32, handler: Handler) {
     }
 }
 async fn handle_connection(
+    port: i32,
     client: Client,
     handler: Handler,
     stream: TcpStream,
@@ -98,6 +117,7 @@ async fn handle_connection(
     let mut receiver = RequestDecoder::new(r);
     let (mut tx, rx) = spsc_pair();
     monoio::spawn(handle_task(
+        port,
         client,
         handler,
         rx,
@@ -130,6 +150,8 @@ async fn handle_connection(
 }
 
 async fn handle_task(
+    port: i32,
+
     client: Client,
     handler: Handler,
     mut receiver: SPSCReceiver<Request>,
@@ -160,6 +182,7 @@ async fn handle_task(
         };
 
         let gateway_request = GatewayRequest::new(
+            port,
             request,
             remote_addr.clone(),
             client.clone(),
@@ -178,63 +201,6 @@ async fn handle_task(
             Err(e) => {
                 error!("{}", e);
             }
-        }
-    }
-}
-
-async fn handle_request(gateway_request: GatewayRequest) -> Result<Response, AppError> {
-    let resp_result = gateway_request
-        .client
-        .get("http://backend:8080/get")
-        .send()
-        .await;
-
-    match resp_result {
-        Ok(resp) => {
-            info!("has receive response,header is:{:?}", resp.headers());
-            let http_resp = resp.bytes().await.unwrap();
-            let res = Payload::Fixed(FixedPayload::new(http_resp));
-
-            // let req = gateway_request.request;
-            // let mut headers = HeaderMap::new();
-            // headers.insert("Server", "monoio-http-demo".parse().unwrap());
-            // let mut has_error = false;
-            // let mut has_payload = false;
-            // let payload = match req.into_body() {
-            //     Payload::None => Payload::None,
-            //     Payload::Fixed(mut p) => match p.next().await.unwrap() {
-            //         Ok(data) => {
-            //             has_payload = true;
-            //             Payload::Fixed(FixedPayload::new(data))
-            //         }
-            //         Err(_) => {
-            //             has_error = true;
-            //             Payload::None
-            //         }
-            //     },
-            //     Payload::Stream(_) => unimplemented!(),
-            // };
-
-            // let status = if has_error {
-            //     StatusCode::INTERNAL_SERVER_ERROR
-            // } else if has_payload {
-            //     StatusCode::OK
-            // } else {
-            //     StatusCode::NO_CONTENT
-            // };
-            Ok(Builder::new()
-                .status(StatusCode::OK)
-                .header("Server", "monoio-http-demo")
-                .body(res)
-                .unwrap())
-        }
-        Err(e) => {
-            return Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Payload::Fixed(FixedPayload::new(Bytes::from(
-                    e.to_string(),
-                ))))
-                .unwrap());
         }
     }
 }
