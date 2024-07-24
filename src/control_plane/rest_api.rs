@@ -56,20 +56,26 @@ async fn post_app_config(
     Ok(t)
 }
 async fn post_app_config_with_error(
-    mut api_service: ApiService,
-    mut handler: Handler,
+    api_service: ApiService,
+    handler: Handler,
 ) -> Result<impl axum::response::IntoResponse, AppError> {
-    let api_service_str =
-        serde_json::to_string(&api_service).map_err(|e| AppError(e.to_string()))?;
     let port = api_service.listen_port;
-    create_monoio_runtime(port, handler);
-
-    let data = BaseResponse {
-        response_code: 0,
-        response_object: 0,
-    };
-    let json_str = serde_json::to_string(&data).unwrap();
-    Ok((axum::http::StatusCode::OK, json_str))
+    let app_config = handler
+        .shared_app_config
+        .read()
+        .map_err(|e| AppError(e.to_string()))?
+        .clone();
+    if !app_config.api_service_config.contains_key(&port) {
+        create_monoio_runtime(port, handler);
+        let data = BaseResponse {
+            response_code: 0,
+            response_object: 0,
+        };
+        let json_str = serde_json::to_string(&data).unwrap();
+        Ok((axum::http::StatusCode::OK, json_str))
+    } else {
+        Err(AppError(format!("The port {} is already in use", port)))
+    }
 }
 async fn delete_route(
     axum::extract::Path(_route_id): axum::extract::Path<String>,
