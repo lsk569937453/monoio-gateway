@@ -6,6 +6,8 @@ use crate::vojo::app_config::Route;
 
 use crate::vojo::app_config::AppConfig;
 use crate::vojo::app_error::AppError;
+
+use crate::ensure;
 use crate::vojo::base_response::BaseResponse;
 use crate::vojo::handler::Handler;
 use axum::extract::State;
@@ -91,14 +93,28 @@ async fn delete_route(
 
 async fn put_route(
     State(state): State<Handler>,
+    axum::extract::Path(port): axum::extract::Path<i32>,
+
     axum::extract::Json(route_vistor): axum::extract::Json<Route>,
 ) -> Result<impl axum::response::IntoResponse, Infallible> {
-    match put_route_with_error(route_vistor, state).await {
+    match put_route_with_error(route_vistor, state, port).await {
         Ok(r) => Ok((axum::http::StatusCode::OK, r)),
         Err(e) => Ok((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
-async fn put_route_with_error(_route_vistor: Route, handler: Handler) -> Result<String, AppError> {
+async fn put_route_with_error(
+    _route_vistor: Route,
+    handler: Handler,
+    port: i32,
+) -> Result<String, AppError> {
+    let app_config = handler
+        .shared_app_config
+        .write()
+        .map_err(|e| AppError(e.to_string()))?;
+    ensure!(
+        app_config.api_service_config.contains_key(&port),
+        "ip is not in use"
+    );
     let data = BaseResponse {
         response_code: 0,
         response_object: 0,
@@ -130,8 +146,8 @@ async fn save_config_to_file(data: AppConfig) -> Result<(), AppError> {
 pub fn get_router(handler: Handler) -> Router {
     axum::Router::new()
         .route("/appConfig", get(get_app_config).post(post_app_config))
-        .route("/route/:id", delete(delete_route))
-        .route("/route", put(put_route))
+        .route("/route/:id", delete(delete_route).put(put_route))
+        // .route("/route/:port", put(put_route))
         .with_state(handler)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
