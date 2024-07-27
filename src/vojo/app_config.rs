@@ -27,6 +27,7 @@ pub struct LivenessStatus {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Route {
+    pub route_id: String,
     pub host_name: Option<String>,
     pub matcher: Option<Matcher>,
     pub allow_deny_list: Option<Vec<AllowDenyObject>>,

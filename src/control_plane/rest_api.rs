@@ -93,11 +93,10 @@ async fn delete_route(
 
 async fn put_route(
     State(state): State<Handler>,
-    axum::extract::Path(port): axum::extract::Path<i32>,
-
+    axum::extract::Path((port, route_id)): axum::extract::Path<(i32, String)>,
     axum::extract::Json(route_vistor): axum::extract::Json<Route>,
 ) -> Result<impl axum::response::IntoResponse, Infallible> {
-    match put_route_with_error(route_vistor, state, port).await {
+    match put_route_with_error(route_vistor, state, port, route_id).await {
         Ok(r) => Ok((axum::http::StatusCode::OK, r)),
         Err(e) => Ok((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
@@ -106,15 +105,32 @@ async fn put_route_with_error(
     _route_vistor: Route,
     handler: Handler,
     port: i32,
+    route_id: String,
 ) -> Result<String, AppError> {
-    let app_config = handler
+    let mut app_config = handler
         .shared_app_config
         .write()
         .map_err(|e| AppError(e.to_string()))?;
-    ensure!(
-        app_config.api_service_config.contains_key(&port),
-        "ip is not in use"
-    );
+
+    let app_service_option = app_config.api_service_config.get_mut(&port);
+    if let Some(api_service) = app_service_option {
+        let value = api_service
+            .service_config
+            .routes
+            .iter_mut()
+            .find(|s| s.route_id == route_id);
+        if let Some(route) = value {
+            route.matcher = _route_vistor.matcher;
+            route.host_name = _route_vistor.host_name;
+            route.authentication = _route_vistor.authentication;
+            route.ratelimit = _route_vistor.ratelimit;
+            route.allow_deny_list = _route_vistor.allow_deny_list;
+        } else {
+            return Err(AppError(format!("The route {} is not found", route_id)));
+        }
+    } else {
+        return Err(AppError(format!("The port {} is not in use", port)));
+    }
     let data = BaseResponse {
         response_code: 0,
         response_object: 0,
@@ -146,7 +162,7 @@ async fn save_config_to_file(data: AppConfig) -> Result<(), AppError> {
 pub fn get_router(handler: Handler) -> Router {
     axum::Router::new()
         .route("/appConfig", get(get_app_config).post(post_app_config))
-        .route("/route/:id", delete(delete_route).put(put_route))
+        .route("/route/:id/:route_id", put(put_route))
         // .route("/route/:port", put(put_route))
         .with_state(handler)
         .layer(TraceLayer::new_for_http())
